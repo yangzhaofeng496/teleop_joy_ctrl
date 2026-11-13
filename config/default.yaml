@@ -100,7 +100,7 @@ light:
   send_brightness_when_off: false
 
 video:
-  enabled: true
+  enabled: false
   double_click_interval: 0.4
   long_press_duration: 1.5
   camera_workspace: /home/shansu/catkin_ws

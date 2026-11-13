@@ -201,6 +201,9 @@ class TeleopJoyCtrl(object):
         self.disable_client = None
         self.clear_error_client = None
         self.robot_mode_client = None
+        self.stop_client = None
+        self.continue_client = None
+        self.arm_operation_lock = threading.Lock()
 
         self.cmd_vel_pub = rospy.Publisher(self.cmd_vel_topic, Twist, queue_size=1)
         self.state_pub = rospy.Publisher(self.state_topic, String, queue_size=5, latch=True)
@@ -289,12 +292,22 @@ class TeleopJoyCtrl(object):
         }
 
     def init_arm_clients(self):
+        
+        try:
+            from dobot_v4_bringup.srv import Stop, Continue
+        except ImportError:
+            rospy.logwarn('缺少 Stop/Continue 服务类型，Y 键机械臂功能不可用')
+        else:
+            self.stop_client = rospy.ServiceProxy(srv_prefix + '/Stop', Stop)
+            self.continue_client = rospy.ServiceProxy(
+                srv_prefix + '/Continue', Continue)
+            
         if not self.arm_config_enabled:
             rospy.loginfo('手柄总控节点: 机械臂控制已通过参数关闭')
             return False
 
         try:
-            from dobot_v4_bringup.srv import ClearError, DisableRobot, EnableRobot, RobotMode
+            from dobot_v4_bringup.srv import ClearError, DisableRobot, EnableRobot, RobotMode,
         except ImportError as exc:
             self.arm_clients_ready = False
             rospy.logerr(
@@ -352,7 +365,14 @@ class TeleopJoyCtrl(object):
                 start_index,
                 self.cn_bool(self.locked),
                 self.cn_bool(self.arm_clients_ready)))
-            self.handle_arm_start()
+            # self.handle_arm_start()
+            if self.arm_operation_lock.acquire(False):
+                try:
+                    self.handle_arm_start()
+                finally:
+                    self.arm_operation_lock.release()
+            else:
+                rospy.logwarn('机械臂操作仍在执行，忽略 START')
 
         if not self.locked:
             if self.rising_button(msg, 'a'):
@@ -362,8 +382,15 @@ class TeleopJoyCtrl(object):
                 self.active_mode = ACTIVE_MODE_CAMERA
                 self.publish_state('模式=相机参数')
             if self.rising_button(msg, 'y'):
-                self.active_mode = ACTIVE_MODE_LIGHT
-                self.publish_state('模式=光源亮度')
+                # self.active_mode = ACTIVE_MODE_LIGHT
+                # self.publish_state('模式=光源亮度')
+                lt = int(self.axes.get('left_trigger', -1))
+                resume = (
+                    0 <= lt < len(msg.axes)
+                    and -1.0 <= msg.axes[lt] <= 1.0
+                    and self.left_trigger_held(msg)
+                )
+                self.request_arm_motion('continue' if resume else 'stop')
             if self.rising_button(msg, 'home'):
                 self.log_success('HOME按键触发，准备切换光源开关')
                 self.toggle_light()
@@ -730,6 +757,47 @@ class TeleopJoyCtrl(object):
             return False
 
         return True
+    def request_arm_motion(self, action):
+        if self.locked:
+            return
+
+        client = {
+            'stop': self.stop_client,
+            'continue': self.continue_client,
+        }.get(action)
+        if not self.arm_clients_ready or client is None:
+            rospy.logwarn('机械臂服务未就绪，忽略 %s', action)
+            return
+
+        if not self.arm_operation_lock.acquire(False):
+            rospy.logwarn('机械臂操作仍在执行，忽略 %s', action)
+            return
+
+        def worker():
+            try:
+                if action == 'continue':
+                    mode = self.query_robot_mode()
+                    if mode != MODE_PAUSE:
+                        rospy.logwarn('当前模式=%s，不执行 Continue', mode)
+                        return
+                if self.locked or rospy.is_shutdown():
+                    return
+
+                result = client()
+                if result.res == 0:
+                    rospy.loginfo('机械臂已接受 %s 命令', action)
+                else:
+                    rospy.logwarn('机械臂拒绝 %s，返回码=%s', action, result.res)
+            except rospy.ServiceException as exc:
+                rospy.logerr('机械臂 %s 服务调用失败：%s', action, exc)
+            finally:
+                self.arm_operation_lock.release()
+
+        try:
+            threading.Thread(target=worker, daemon=True).start()
+        except RuntimeError as exc:
+            self.arm_operation_lock.release()
+            rospy.logerr('无法启动机械臂操作线程：%s', exc)
 
     def handle_arm_start(self):
         rospy.loginfo('手柄总控节点: START进入机械臂状态机处理 locked=%s arm_ready=%s' % (

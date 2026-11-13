@@ -8,11 +8,11 @@
 
   <arg name="start_arm_bringup" default="false" />
   <arg name="start_light_controller" default="true" />
-  <arg name="start_video_manager" default="true" />
-  <arg name="start_hybrid_video_manager" default="true" />
+  <arg name="start_video_manager" default="false" />
+  <arg name="start_hybrid_video_manager" default="false" />
   <arg name="start_legacy_video_manager" default="false" />
   
-  <arg name="hybrid_video_config" default="$(find hybrid_video_recorder)/config/default.yaml" />
+  <arg name="hybrid_video_config" default="" />
   <arg name="start_takeover_mux" default="true" />
   <arg name="restore_system_teleop_on_shutdown" default="true" />
   <arg name="system_teleop_package" default="robot_driver" />
